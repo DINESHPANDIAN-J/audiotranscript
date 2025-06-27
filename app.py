@@ -1,8 +1,7 @@
 import streamlit as st
 from streamlit_mic_recorder import mic_recorder
 from faster_whisper import WhisperModel
-# Removed AutoTokenizer, AutoModelForSeq2SeqLM as pipeline handles them internally if needed for simplicity
-from transformers import pipeline
+from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
 import os
 from pydub import AudioSegment
 import io
@@ -19,91 +18,80 @@ try:
 except ImportError:
     Llama = None # Set to None if not installed, handle gracefully
 
-# --- REMOVE THIS SECTION (or at least the `spacy.load` part if `config.toml` is gone) ---
-# Your current code has this block, which is trying to load the spaCy model
-# and uses the `python -m spacy download` command in an `OSError` block.
-# This part is causing issues now that `config.toml` approach is deprecated
-# and `spacy.load("en_core_web_sm")` will fail without the model being present.
-# We will rely on it being installed via requirements.txt.
-
-# @st.cache_resource
-# def load_spacy_model():
-#     """Loads the spaCy English model for sentence tokenization."""
-#     with st.spinner("Loading spaCy English model for sentence tokenization..."):
-#         try:
-#             nlp = spacy.load("en_core_web_sm")
-#             st.success("SpaCy English model 'en_core_web_sm' loaded successfully for sentence tokenization!")
-#             return nlp
-#         except OSError:
-#             st.error("SpaCy English model 'en_core_web_sm' not found.")
-#             st.info("Please ensure 'en_core_web_sm' is listed in your requirements.txt using the direct URL.")
-#             st.stop()
-#         except Exception as e:
-#             st.error(f"An unexpected error occurred while loading spaCy model: {e}")
-#             st.stop()
-
-# # Load the spaCy model at app startup (cached)
-# spacy_nlp_model = load_spacy_model()
-
-# --- RE-ADD SpaCy Model Loading Correctly ---
-# We still need to load spaCy, but assume it's installed via requirements.txt now.
+# --- spaCy Model Loading and Data Check ---
 @st.cache_resource
-def load_spacy_model_safe():
-    """Loads the spaCy English model safely, assuming it's installed via requirements.txt."""
+def load_spacy_model():
+    """Loads the spaCy English model for sentence tokenization."""
     with st.spinner("Loading spaCy English model for sentence tokenization..."):
         try:
             nlp = spacy.load("en_core_web_sm")
             st.success("SpaCy English model 'en_core_web_sm' loaded successfully for sentence tokenization!")
             return nlp
+        except OSError:
+            st.error("SpaCy English model 'en_core_web_sm' not found.")
+            st.info("Please run the following command in your terminal ONCE to download the model, then restart the app:")
+            st.code("python -m spacy download en_core_web_sm")
+            st.stop()
         except Exception as e:
-            st.error(f"Failed to load spaCy model 'en_core_web_sm'. Please ensure it's installed via requirements.txt. Error: {e}")
+            st.error(f"An unexpected error occurred while loading spaCy model: {e}")
             st.stop()
 
-spacy_nlp_model = load_spacy_model_safe()
-
+# Load the spaCy model at app startup (cached)
+spacy_nlp_model = load_spacy_model()
 
 # --- Configuration ---
 WHISPER_MODEL_NAME = "base"
 WHISPER_COMPUTE_TYPE = "int8"
 
 # --- LLM Configuration for Summarization and Grammar Check ---
-LLM_MODEL_NAME = "google/flan-t5-base"
-LLM_MODEL_TYPE = "hf_pipeline"
-SUMMARIZATION_MAX_NEW_TOKENS = 150 # Changed from MAX_TOKENS for clarity with LLM_MODEL_TYPE == "hf_pipeline"
-SUMMARIZATION_MIN_NEW_TOKENS = 40
+LLM_MODEL_NAME = "google/flan-t5-base" # Keep this for now
+LLM_MODEL_TYPE = "hf_pipeline" # Keep this for now
+SUMMARIZATION_MAX_TOKENS = 150
+SUMMARIZATION_MIN_TOKENS = 40
 SUMMARIZATION_BEAM_SIZE = 4
 
-# IMPORTANT: You need to specify the max input length for your summarization model.
-# For 'google/flan-t5-base', it's typically 512.
-SUMMARIZATION_MAX_INPUT_LENGTH = 512 # Add this line
+# Add a summarization prompt specifically for hf_pipeline
+SUMMARIZATION_PROMPT_HF_PIPELINE = "Summarize the following text concisely and without repetition:\n{text}"
+
 
 # Uncomment for GGUF:
 # LLM_MODEL_NAME = "models/gemma-2b-it.Q4_K_M.gguf"
 # LLM_MODEL_TYPE = "llama_cpp"
-# SUMMARIZATION_MAX_NEW_TOKENS = 200 # Changed for consistency
-# SUMMARIZATION_MIN_NEW_TOKENS = 50
+# SUMMARIZATION_MAX_TOKENS = 200
+# SUMMARIZATION_MIN_TOKENS = 50
 # SUMMARIZATION_PROMPT_TEMPLATE = "<bos><start_of_turn>user\nSummarize the following text:\n{text}<end_of_turn>\n<start_of_turn>model\n"
 
+# --- REVISED GRAMMAR PROMPT ---
 GRAMMAR_PROMPT_TEMPLATE = """
 As a helpful grammar assistant, please review the following sentence from an audio transcript.
-If there are any significant grammatical errors or awkward phrasing, suggest a more natural or correct way to say it.
-Explain the correction gently and provide a simple example of the correct usage.
-If the sentence is perfectly fine, just say "No significant issues found."
+If there are any significant grammatical errors, awkward phrasing, or missing words that make the sentence unnatural, suggest a more natural or grammatically correct way to say it.
+Explain the correction briefly and provide the corrected sentence clearly.
+If the sentence is perfectly natural and grammatically correct, just say "No changes needed."
+Do not repeat the original sentence if no changes are needed.
 
-Example:
+Examples:
 Input Sentence: I was going tomorrow.
-Suggestion: It seems like you might be talking about a future event. A more common way to express this would be, "I will go tomorrow."
+Suggestion: You are talking about a future event. Corrected: "I will go tomorrow."
 
 Input Sentence: He don't like apples.
-Suggestion: For 'he', 'she', or 'it', we usually use 'doesn't' instead of 'don't'. So, "He doesn't like apples" would be correct.
+Suggestion: For 'he', 'she', or 'it', use 'doesn't'. Corrected: "He doesn't like apples."
 
 Input Sentence: We went to the store.
-Suggestion: No significant issues found.
+Suggestion: No changes needed.
+
+Input Sentence: My.
+Suggestion: This is a single word and not a complete sentence that requires grammatical correction. No changes needed.
+
+Input Sentence: So just so that I understand.
+Suggestion: This is a common conversational phrase and is grammatically acceptable in context. No changes needed.
 
 Input Sentence: {text}
 Suggestion:
 """
-GRAMMAR_MAX_TOKENS = 150
+GRAMMAR_MAX_TOKENS = 150 # Adjust if needed
+
+# Define a minimum word count for a sentence to be considered for grammar checking
+MIN_WORDS_FOR_GRAMMAR_CHECK = 4 # Adjust this threshold as needed (e.g., 2, 3, or 4)
 
 # --- Streamlit Page Setup ---
 st.set_page_config(layout="centered", page_title="Audio Processor")
@@ -132,14 +120,9 @@ def load_llm_for_tasks(model_name, model_type):
     with st.spinner(f"Loading LLM ({model_name})..."):
         try:
             if model_type == "hf_pipeline":
-                # For `google/flan-t5-base`, it's a Seq2Seq model, suitable for "summarization" pipeline.
-                # The pipeline handles tokenizer and model loading.
-                llm_pipeline = pipeline(
-                    "summarization",
-                    model=model_name, # Pass model_name directly
-                    tokenizer=model_name, # Pass model_name directly
-                    device=-1 # -1 for CPU
-                )
+                tokenizer = AutoTokenizer.from_pretrained(model_name)
+                model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+                llm_pipeline = pipeline("text2text-generation", model=model, tokenizer=tokenizer, device=-1)
                 st.success(f"Hugging Face LLM '{model_name}' loaded successfully!")
                 return llm_pipeline
             elif model_type == "llama_cpp":
@@ -308,35 +291,37 @@ if st.button("Process Audio", use_container_width=True):
 
         # --- Summarize Transcript ---
         if st.session_state.transcript_text:
-            # You might need a more robust way to count "words" for a min_length check
-            # For simplicity, using character count here, but tokenizer.encode is more accurate.
-            # However, for just a threshold, split() is often fine.
             if len(st.session_state.transcript_text.split()) >= 30:
                 with st.spinner("Generating summary... (This may take a while on CPU)"):
                     try:
                         summary = ""
                         if LLM_MODEL_TYPE == "hf_pipeline":
-                            # Ensure the input text is truncated before sending to the model
-                            # The tokenizer automatically handles truncation if `max_length` is set.
+                            # Use the new prompt for Hugging Face
+                            text_to_summarize = SUMMARIZATION_PROMPT_HF_PIPELINE.format(text=st.session_state.transcript_text)
                             summary_result = llm_model(
-                                st.session_state.transcript_text,
-                                max_length=SUMMARIZATION_MAX_NEW_TOKENS, # Use max_new_tokens for clarity
-                                min_length=SUMMARIZATION_MIN_NEW_TOKENS,
+                                text_to_summarize, # Use the prepended text
+                                max_length=SUMMARIZATION_MAX_TOKENS,
+                                min_length=SUMMARIZATION_MIN_TOKENS,
                                 do_sample=False,
                                 num_beams=SUMMARIZATION_BEAM_SIZE,
-                                # CRUCIAL: Add truncation=True to handle long inputs
-                                truncation=True,
-                                # max_input_length is handled by the pipeline's tokenizer when truncation=True
+                                repetition_penalty=1.2 # Added for better control
                             )
                             summary = summary_result[0]['generated_text']
                         elif LLM_MODEL_TYPE == "llama_cpp":
+                            # For llama_cpp, ensure the SUMMARIZATION_PROMPT_TEMPLATE is correctly defined.
+                            # It's recommended to define this globally at the top if you intend to use llama_cpp.
+                            # If it's only meant to be enabled by uncommenting, then it needs to be accessible here.
+                            # For clarity, assuming it would be defined if LLM_MODEL_TYPE is 'llama_cpp'.
+                            # If you uncommented the GGUF section, this template would already be in globals().
+                            # If not, you might need to define a default here or ensure it's uncommented.
                             if 'SUMMARIZATION_PROMPT_TEMPLATE' not in globals():
+                                # Fallback/default if GGUF section wasn't uncommented at the top
                                 SUMMARIZATION_PROMPT_TEMPLATE = "<bos><start_of_turn>user\nSummarize the following text:\n{text}<end_of_turn>\n<start_of_turn>model\n"
 
                             prompt = SUMMARIZATION_PROMPT_TEMPLATE.format(text=st.session_state.transcript_text)
                             output = llm_model(
                                 prompt,
-                                max_tokens=SUMMARIZATION_MAX_NEW_TOKENS, # Use max_new_tokens for consistency
+                                max_tokens=SUMMARIZATION_MAX_TOKENS,
                                 stop=["</s>", "[/INST]", "<end_of_turn>"],
                                 echo=False,
                             )
@@ -361,39 +346,37 @@ if st.button("Process Audio", use_container_width=True):
 
             # Use spaCy for sentence tokenization
             doc = spacy_nlp_model(st.session_state.transcript_text)
-            sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()] # Extract and clean sentences
+            # Filter sentences before sending to LLM
+            sentences = [
+                sent.text.strip() for sent in doc.sents
+                if sent.text.strip() and len(sent.text.strip().split()) >= MIN_WORDS_FOR_GRAMMAR_CHECK
+            ]
 
             if not sentences:
-                st.info("No sentences found for grammar check.")
+                st.info("No sentences found for grammar check (or all were too short).")
             else:
                 st.info(f"Checking grammar for {len(sentences)} sentences... This may take a while as each sentence is processed by the LLM.")
                 progress_bar = st.progress(0, text="Checking grammar...")
 
                 for i, sentence in enumerate(sentences):
-                    if not sentence.strip():
+                    # Ensure we don't process empty strings
+                    if not sentence:
                         continue
 
-                    grammar_full_prompt = GRAMMAR_PROMPT_TEMPLATE.format(text=sentence.strip())
+                    grammar_full_prompt = GRAMMAR_PROMPT_TEMPLATE.format(text=sentence) # Use the filtered sentence
                     suggestion_text = "Error generating suggestion."
 
                     try:
                         if LLM_MODEL_TYPE == "hf_pipeline":
-                            # For grammar, you want the LLM to generate the suggestion,
-                            # so use max_new_tokens for output length control.
-                            # Also, ensure the input for grammar is truncated if it's too long for the LLM's context.
                             grammar_output = llm_model(
                                 grammar_full_prompt,
-                                max_length=GRAMMAR_MAX_TOKENS, # Use this to control output length for the grammar task
-                                # This is important for the text2text-generation pipeline for grammar prompts.
-                                # The T5 model context window is typically 512, so truncate if prompt + sentence is too long.
-                                truncation=True,
-                                # min_length and num_beams might not be as critical for a simple Q&A like grammar
-                                # but can be kept for consistency.
-                                min_length=10,
+                                # max_length should be large enough for the suggestion + original
+                                max_length=len(sentence.split()) + GRAMMAR_MAX_TOKENS,
+                                min_length=10, # Ensure a reasonable minimum output length
                                 do_sample=False,
-                                num_beams=1 # For a more deterministic output for grammar
+                                num_beams=SUMMARIZATION_BEAM_SIZE
                             )
-                            suggestion_text = grammar_output[0]['generated_text'].strip()
+                            raw_suggestion = grammar_output[0]['generated_text'].strip()
 
                         elif LLM_MODEL_TYPE == "llama_cpp":
                             output = llm_model(
@@ -402,10 +385,17 @@ if st.button("Process Audio", use_container_width=True):
                                 stop=["\nInput Sentence:", "Suggestion:", "</s>", "[/INST]", "<end_of_turn>"],
                                 echo=False,
                             )
-                            suggestion_text = output["choices"][0]["text"].strip()
-                            if suggestion_text.startswith("Suggestion:"):
-                                suggestion_text = suggestion_text[len("Suggestion:"):].strip()
-                            suggestion_text = re.split(r'(?i)Input Sentence:', suggestion_text)[0].strip()
+                            raw_suggestion = output["choices"][0]["text"].strip()
+                            # Clean up the output to only get the suggestion part for llama_cpp
+                            if raw_suggestion.startswith("Suggestion:"):
+                                raw_suggestion = raw_suggestion[len("Suggestion:"):].strip()
+                            raw_suggestion = re.split(r'(?i)Input Sentence:', raw_suggestion)[0].strip()
+
+                        # Post-process the raw_suggestion to check for "No changes needed."
+                        if "no changes needed" in raw_suggestion.lower():
+                            suggestion_text = "No significant issues found." # Use your preferred phrasing
+                        else:
+                            suggestion_text = raw_suggestion
 
                     except Exception as e:
                         st.error(f"Error checking grammar for sentence '{sentence[:50]}...': {e}")
@@ -418,9 +408,20 @@ if st.button("Process Audio", use_container_width=True):
                 if st.session_state.grammar_suggestions:
                     with st.expander("Show Grammar Suggestions"):
                         for original, suggestion in st.session_state.grammar_suggestions:
-                            st.markdown(f"**Original:** `{original}`")
-                            st.markdown(f"**Suggestion:** _{suggestion}_")
-                            st.markdown("---")
+                            # Only display if there's an actual suggestion or not "No significant issues found."
+                            if "No significant issues found." not in suggestion and "Error:" not in suggestion:
+                                st.markdown(f"**Original:** `{original}`")
+                                st.markdown(f"**Suggestion:** _{suggestion}_")
+                                st.markdown("---")
+                            elif "Error:" in suggestion:
+                                st.markdown(f"**Original:** `{original}`")
+                                st.markdown(f"**Error during check:** _{suggestion}_")
+                                st.markdown("---")
+                            # Optionally, you can display "No significant issues found."
+                            # else:
+                            #     st.markdown(f"**Original:** `{original}`")
+                            #     st.markdown(f"**Suggestion:** _{suggestion}_")
+                            #     st.markdown("---")
                 else:
                     st.info("No grammar suggestions generated.")
         else:
@@ -434,10 +435,16 @@ if st.session_state.transcript_text or st.session_state.summary_text or st.sessi
     st.markdown("---")
     st.header("Download Results")
 
+    # Filter grammar suggestions for PDF to only include actual suggestions
+    pdf_grammar_suggestions = [
+        (original, suggestion) for original, suggestion in st.session_state.grammar_suggestions
+        if "No significant issues found." not in suggestion and "Error:" not in suggestion
+    ]
+
     pdf_output_bytes = generate_pdf(
         st.session_state.transcript_text,
         st.session_state.summary_text,
-        st.session_state.grammar_suggestions
+        pdf_grammar_suggestions # Pass filtered suggestions
     )
 
     st.download_button(
