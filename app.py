@@ -62,32 +62,26 @@ SUMMARIZATION_PROMPT_HF_PIPELINE = "Summarize the following text concisely and w
 # SUMMARIZATION_PROMPT_TEMPLATE = "<bos><start_of_turn>user\nSummarize the following text:\n{text}<end_of_turn>\n<start_of_turn>model\n"
 
 # --- REVISED GRAMMAR PROMPT (Carefully formatted to prevent TokenError) ---
-GRAMMAR_PROMPT_TEMPLATE = """
-As a helpful grammar assistant, please review the following sentence from an audio transcript.
-If there are any significant grammatical errors, awkward phrasing, or missing words that make the sentence unnatural, suggest a more natural or grammatically correct way to say it.
-Explain the correction briefly and provide the corrected sentence clearly.
-If the sentence is perfectly natural and grammatically correct, just say "No changes needed."
-Do not repeat the original sentence if no changes are needed.
-
-Examples:
-Input Sentence: I was going tomorrow.
-Suggestion: You are talking about a future event. Corrected: "I will go tomorrow."
-
-Input Sentence: He don't like apples.
-Suggestion: For 'he', 'she', or 'it', use 'doesn't'. Corrected: "He doesn't like apples."
-
-Input Sentence: We went to the store.
-Suggestion: No changes needed.
-
-Input Sentence: My.
-Suggestion: This is a single word and not a complete sentence that requires grammatical correction. No changes needed.
-
-Input Sentence: So just so that I understand.
-Suggestion: This is a common conversational phrase and is grammatically acceptable in context. No changes needed.
-
-Input Sentence: {text}
-Suggestion:""" # Ensure no extra newlines or spaces after "Suggestion:" and before the triple quotes.
-
+GRAMMAR_PROMPT_TEMPLATE = (
+    "As a helpful grammar assistant, please review the following sentence from an audio transcript.\n"
+    "If there are any significant grammatical errors, awkward phrasing, or missing words that make the sentence unnatural, suggest a more natural or grammatically correct way to say it.\n"
+    "Explain the correction briefly and provide the corrected sentence clearly.\n"
+    "If the sentence is perfectly natural and grammatically correct, just say \"No changes needed.\"\n"
+    "Do not repeat the original sentence if no changes are needed.\n\n"
+    "Examples:\n"
+    "Input Sentence: I was going tomorrow.\n"
+    "Suggestion: You are talking about a future event. Corrected: \"I will go tomorrow.\"\n\n"
+    "Input Sentence: He don't like apples.\n"
+    "Suggestion: For 'he', 'she', or 'it', use 'doesn't'. Corrected: \"He doesn't like apples.\"\n\n"
+    "Input Sentence: We went to the store.\n"
+    "Suggestion: No changes needed.\n\n"
+    "Input Sentence: My.\n"
+    "Suggestion: This is a single word and not a complete sentence that requires grammatical correction. No changes needed.\n\n"
+    "Input Sentence: So just so that I understand.\n"
+    "Suggestion: This is a common conversational phrase and is grammatically acceptable in context. No changes needed.\n\n"
+    "Input Sentence: {text}\n"
+    "Suggestion:"
+)
 GRAMMAR_MAX_TOKENS = 150 # Adjust if needed
 
 # Define a minimum word count for a sentence to be considered for grammar checking
