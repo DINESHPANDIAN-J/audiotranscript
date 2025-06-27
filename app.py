@@ -1,7 +1,8 @@
 import streamlit as st
 from streamlit_mic_recorder import mic_recorder
 from faster_whisper import WhisperModel
-from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
+# Removed AutoTokenizer, AutoModelForSeq2SeqLM as pipeline handles them internally if needed for simplicity
+from transformers import pipeline
 import os
 from pydub import AudioSegment
 import io
@@ -18,28 +19,48 @@ try:
 except ImportError:
     Llama = None # Set to None if not installed, handle gracefully
 
-# --- spaCy Model Loading and Data Check ---
+# --- REMOVE THIS SECTION (or at least the `spacy.load` part if `config.toml` is gone) ---
+# Your current code has this block, which is trying to load the spaCy model
+# and uses the `python -m spacy download` command in an `OSError` block.
+# This part is causing issues now that `config.toml` approach is deprecated
+# and `spacy.load("en_core_web_sm")` will fail without the model being present.
+# We will rely on it being installed via requirements.txt.
+
+# @st.cache_resource
+# def load_spacy_model():
+#     """Loads the spaCy English model for sentence tokenization."""
+#     with st.spinner("Loading spaCy English model for sentence tokenization..."):
+#         try:
+#             nlp = spacy.load("en_core_web_sm")
+#             st.success("SpaCy English model 'en_core_web_sm' loaded successfully for sentence tokenization!")
+#             return nlp
+#         except OSError:
+#             st.error("SpaCy English model 'en_core_web_sm' not found.")
+#             st.info("Please ensure 'en_core_web_sm' is listed in your requirements.txt using the direct URL.")
+#             st.stop()
+#         except Exception as e:
+#             st.error(f"An unexpected error occurred while loading spaCy model: {e}")
+#             st.stop()
+
+# # Load the spaCy model at app startup (cached)
+# spacy_nlp_model = load_spacy_model()
+
+# --- RE-ADD SpaCy Model Loading Correctly ---
+# We still need to load spaCy, but assume it's installed via requirements.txt now.
 @st.cache_resource
-def load_spacy_model():
-    """Loads the spaCy English model for sentence tokenization."""
+def load_spacy_model_safe():
+    """Loads the spaCy English model safely, assuming it's installed via requirements.txt."""
     with st.spinner("Loading spaCy English model for sentence tokenization..."):
         try:
-            # Try to load the model
             nlp = spacy.load("en_core_web_sm")
             st.success("SpaCy English model 'en_core_web_sm' loaded successfully for sentence tokenization!")
             return nlp
-        except OSError:
-            # If model is not found, prompt the user to download it
-            st.error("SpaCy English model 'en_core_web_sm' not found.")
-            st.info("Please run the following command in your terminal ONCE to download the model, then restart the app:")
-            st.code("python -m spacy download en_core_web_sm")
-            st.stop() # Stop the app until the model is downloaded
         except Exception as e:
-            st.error(f"An unexpected error occurred while loading spaCy model: {e}")
+            st.error(f"Failed to load spaCy model 'en_core_web_sm'. Please ensure it's installed via requirements.txt. Error: {e}")
             st.stop()
 
-# Load the spaCy model at app startup (cached)
-spacy_nlp_model = load_spacy_model()
+spacy_nlp_model = load_spacy_model_safe()
+
 
 # --- Configuration ---
 WHISPER_MODEL_NAME = "base"
@@ -48,15 +69,19 @@ WHISPER_COMPUTE_TYPE = "int8"
 # --- LLM Configuration for Summarization and Grammar Check ---
 LLM_MODEL_NAME = "google/flan-t5-base"
 LLM_MODEL_TYPE = "hf_pipeline"
-SUMMARIZATION_MAX_TOKENS = 150
-SUMMARIZATION_MIN_TOKENS = 40
+SUMMARIZATION_MAX_NEW_TOKENS = 150 # Changed from MAX_TOKENS for clarity with LLM_MODEL_TYPE == "hf_pipeline"
+SUMMARIZATION_MIN_NEW_TOKENS = 40
 SUMMARIZATION_BEAM_SIZE = 4
+
+# IMPORTANT: You need to specify the max input length for your summarization model.
+# For 'google/flan-t5-base', it's typically 512.
+SUMMARIZATION_MAX_INPUT_LENGTH = 512 # Add this line
 
 # Uncomment for GGUF:
 # LLM_MODEL_NAME = "models/gemma-2b-it.Q4_K_M.gguf"
 # LLM_MODEL_TYPE = "llama_cpp"
-# SUMMARIZATION_MAX_TOKENS = 200
-# SUMMARIZATION_MIN_TOKENS = 50
+# SUMMARIZATION_MAX_NEW_TOKENS = 200 # Changed for consistency
+# SUMMARIZATION_MIN_NEW_TOKENS = 50
 # SUMMARIZATION_PROMPT_TEMPLATE = "<bos><start_of_turn>user\nSummarize the following text:\n{text}<end_of_turn>\n<start_of_turn>model\n"
 
 GRAMMAR_PROMPT_TEMPLATE = """
@@ -107,9 +132,14 @@ def load_llm_for_tasks(model_name, model_type):
     with st.spinner(f"Loading LLM ({model_name})..."):
         try:
             if model_type == "hf_pipeline":
-                tokenizer = AutoTokenizer.from_pretrained(model_name)
-                model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-                llm_pipeline = pipeline("text2text-generation", model=model, tokenizer=tokenizer, device=-1)
+                # For `google/flan-t5-base`, it's a Seq2Seq model, suitable for "summarization" pipeline.
+                # The pipeline handles tokenizer and model loading.
+                llm_pipeline = pipeline(
+                    "summarization",
+                    model=model_name, # Pass model_name directly
+                    tokenizer=model_name, # Pass model_name directly
+                    device=-1 # -1 for CPU
+                )
                 st.success(f"Hugging Face LLM '{model_name}' loaded successfully!")
                 return llm_pipeline
             elif model_type == "llama_cpp":
@@ -278,17 +308,25 @@ if st.button("Process Audio", use_container_width=True):
 
         # --- Summarize Transcript ---
         if st.session_state.transcript_text:
+            # You might need a more robust way to count "words" for a min_length check
+            # For simplicity, using character count here, but tokenizer.encode is more accurate.
+            # However, for just a threshold, split() is often fine.
             if len(st.session_state.transcript_text.split()) >= 30:
                 with st.spinner("Generating summary... (This may take a while on CPU)"):
                     try:
                         summary = ""
                         if LLM_MODEL_TYPE == "hf_pipeline":
+                            # Ensure the input text is truncated before sending to the model
+                            # The tokenizer automatically handles truncation if `max_length` is set.
                             summary_result = llm_model(
                                 st.session_state.transcript_text,
-                                max_length=SUMMARIZATION_MAX_TOKENS,
-                                min_length=SUMMARIZATION_MIN_TOKENS,
+                                max_length=SUMMARIZATION_MAX_NEW_TOKENS, # Use max_new_tokens for clarity
+                                min_length=SUMMARIZATION_MIN_NEW_TOKENS,
                                 do_sample=False,
-                                num_beams=SUMMARIZATION_BEAM_SIZE
+                                num_beams=SUMMARIZATION_BEAM_SIZE,
+                                # CRUCIAL: Add truncation=True to handle long inputs
+                                truncation=True,
+                                # max_input_length is handled by the pipeline's tokenizer when truncation=True
                             )
                             summary = summary_result[0]['generated_text']
                         elif LLM_MODEL_TYPE == "llama_cpp":
@@ -298,7 +336,7 @@ if st.button("Process Audio", use_container_width=True):
                             prompt = SUMMARIZATION_PROMPT_TEMPLATE.format(text=st.session_state.transcript_text)
                             output = llm_model(
                                 prompt,
-                                max_tokens=SUMMARIZATION_MAX_TOKENS,
+                                max_tokens=SUMMARIZATION_MAX_NEW_TOKENS, # Use max_new_tokens for consistency
                                 stop=["</s>", "[/INST]", "<end_of_turn>"],
                                 echo=False,
                             )
@@ -340,12 +378,20 @@ if st.button("Process Audio", use_container_width=True):
 
                     try:
                         if LLM_MODEL_TYPE == "hf_pipeline":
+                            # For grammar, you want the LLM to generate the suggestion,
+                            # so use max_new_tokens for output length control.
+                            # Also, ensure the input for grammar is truncated if it's too long for the LLM's context.
                             grammar_output = llm_model(
                                 grammar_full_prompt,
-                                max_length=len(sentence.split()) + GRAMMAR_MAX_TOKENS,
+                                max_length=GRAMMAR_MAX_TOKENS, # Use this to control output length for the grammar task
+                                # This is important for the text2text-generation pipeline for grammar prompts.
+                                # The T5 model context window is typically 512, so truncate if prompt + sentence is too long.
+                                truncation=True,
+                                # min_length and num_beams might not be as critical for a simple Q&A like grammar
+                                # but can be kept for consistency.
                                 min_length=10,
                                 do_sample=False,
-                                num_beams=SUMMARIZATION_BEAM_SIZE
+                                num_beams=1 # For a more deterministic output for grammar
                             )
                             suggestion_text = grammar_output[0]['generated_text'].strip()
 
