@@ -29,7 +29,7 @@ def load_spacy_model():
             return nlp
         except OSError:
             st.error("SpaCy English model 'en_core_web_sm' not found.")
-            st.info("Please run the following command in your terminal ONCE to download the model, then restart the app:")
+            st.info("Please run the following command in your Streamlit Cloud terminal (or local terminal) ONCE to download the model, then restart the app:")
             st.code("python -m spacy download en_core_web_sm")
             st.stop()
         except Exception as e:
@@ -61,7 +61,7 @@ SUMMARIZATION_PROMPT_HF_PIPELINE = "Summarize the following text concisely and w
 # SUMMARIZATION_MIN_TOKENS = 50
 # SUMMARIZATION_PROMPT_TEMPLATE = "<bos><start_of_turn>user\nSummarize the following text:\n{text}<end_of_turn>\n<start_of_turn>model\n"
 
-# --- REVISED GRAMMAR PROMPT ---
+# --- REVISED GRAMMAR PROMPT (Carefully formatted to prevent TokenError) ---
 GRAMMAR_PROMPT_TEMPLATE = """
 As a helpful grammar assistant, please review the following sentence from an audio transcript.
 If there are any significant grammatical errors, awkward phrasing, or missing words that make the sentence unnatural, suggest a more natural or grammatically correct way to say it.
@@ -86,8 +86,8 @@ Input Sentence: So just so that I understand.
 Suggestion: This is a common conversational phrase and is grammatically acceptable in context. No changes needed.
 
 Input Sentence: {text}
-Suggestion:
-"""
+Suggestion:""" # Ensure no extra newlines or spaces after "Suggestion:" and before the triple quotes.
+
 GRAMMAR_MAX_TOKENS = 150 # Adjust if needed
 
 # Define a minimum word count for a sentence to be considered for grammar checking
